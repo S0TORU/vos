@@ -178,7 +178,13 @@ cmd_recap() {
   [[ -f "$skill" ]] || skill="$VOS_REPO/pack/skills/recap/SKILL.md"
   local ctx; ctx="$(load_context_blob)"
   local prompt
-  prompt="$(cat "$skill")"$'\n\n# LOADED CONTEXT\n'"$ctx"$'\n\nExecute the recap now.'
+  prompt="Deliver the boot briefing NOW from LOADED CONTEXT only. Do not call tools. Do not read files. Write the sections: Who you are; Environment; What we've been building; Current state; What's next; Watch items. End with Ready.
+
+# SKILL (format only)
+$(cat "$skill")
+
+# LOADED CONTEXT (already inlined — use this only)
+$ctx"
 
   mkdir -p "$VOS_HOME/state"
   local out=""
