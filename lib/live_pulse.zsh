@@ -114,6 +114,18 @@ vos_worksheet_pulse() {
   done
 }
 
+vos_agent_session_digest() {
+  local py="$VOS_REPO/lib/session_digest.py"
+  [[ -z "${VOS_REPO:-}" ]] && py="$HOME/vos/lib/session_digest.py"
+  if [[ ! -f "$py" ]]; then
+    echo "(session_digest.py missing)"
+    return 0
+  fi
+  # Last 2 sessions per agent; env-overridable
+  VOS_SESSION_N="${VOS_SESSION_N:-2}" \
+    python3 "$py" 2>/dev/null || echo "(session digest failed)"
+}
+
 # Full pulse blob for recap context (bounded)
 vos_build_live_pulse() {
   {
@@ -135,6 +147,8 @@ vos_build_live_pulse() {
     echo "## worksheets"
     vos_worksheet_pulse
     echo ""
-    echo "NOTE: Full Claude .jsonl session logs are NOT loaded. Update ~/.vos/memory/project_lura.md for durable phase truth."
+    vos_agent_session_digest
+    echo ""
+    echo "NOTE: Full agent logs are NOT loaded — only last ${VOS_SESSION_N:-2} sessions × user turns. Update ~/.vos/memory/project_lura.md for durable phase truth."
   } 2>/dev/null
 }
