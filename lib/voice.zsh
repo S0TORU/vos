@@ -196,10 +196,25 @@ vos_remember() {
 }
 
 # Short *spoken* briefing — casual monologue, not section headers.
+# Prefer a cheap DeepSeek rewrite when available; fall back to speech_clean --brief.
 vos_briefing_short() {
   local src="${1:-$VOS_HOME/state/last_briefing.md}"
   [[ -f "$src" ]] || return 0
-  vos_speech_brief "$(cat "$src")"
+  local draft; draft="$(vos_speech_brief "$(cat "$src")")"
+  if typeset -f conductor_run >/dev/null 2>&1 && [[ "${VOS_CONDUCTOR:-deepseek}" != "offline" ]]; then
+    local spoken
+    spoken="$(conductor_run "Rewrite this status for spoken conversation with Aanu.
+4 to 6 short sentences max. Sound like a sharp friend on a call, not a report.
+No markdown. No file paths. No SHAs. No 'user wants'. No section titles. No Ready.
+Facts only from this draft:
+
+$draft" chat 2>/dev/null || true)"
+    if [[ -n "${spoken// }" ]]; then
+      vos_speech_text "$spoken"
+      return 0
+    fi
+  fi
+  printf '%s\n' "$draft"
 }
 
 # Handle a raw (possibly voice-lossy) user line as a voice intent.
