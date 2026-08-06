@@ -58,6 +58,7 @@ resolve_grok() {
 }
 
 # Run a one-shot prompt through the conductor. Prints model text to stdout.
+# Brain = DeepSeek Flash on Fireworks (via Grok Build CLI as the host — model is NOT xAI Grok weights).
 conductor_run() {
   local prompt="$1"
   if [[ "${VOS_CONDUCTOR}" == "offline" ]]; then
@@ -72,9 +73,22 @@ conductor_run() {
     echo "FIREWORKS_API_KEY missing (expected in ~/.grok/.env.fireworks)" >&2
     return 1
   fi
-  # -p / prompt one-shot; -m selects Fireworks DeepSeek via ~/.grok/config.toml
-  # --always-approve so tool calls in voice mode aren't stuck on TUI prompts
-  "$g" -m "$VOS_LLM_MODEL" --always-approve -p "$prompt" 2>/dev/null
+  mkdir -p "$VOS_HOME/state"
+  local err="$VOS_HOME/state/conductor.err"
+  # Identity in user prompt (avoid --system-prompt-override; can 400 on Fireworks)
+  local full
+  full="[HOST] You are VOS (Voice OS). Inference model: ${VOS_LLM_MODEL} on Fireworks (DeepSeek). The CLI host is Grok Build — do not claim to be xAI Grok the product. Be concise and tool-capable.
+[TASK]
+$prompt"
+  # -p one-shot; -m deepseek-flash; --always-approve so tools can run in voice mode
+  if ! "$g" -m "$VOS_LLM_MODEL" --always-approve -p "$full" 2>"$err"; then
+    if [[ -s "$err" ]]; then
+      echo "conductor error (see $err)" >&2
+      head -c 400 "$err" >&2 || true
+      echo >&2
+    fi
+    return 1
+  fi
 }
 
 resolve_whisper_model() {
@@ -146,9 +160,7 @@ load_context_blob() {
       blob+=$'\n--- '"$(basename "$f")"$' ---\n'"$(cat "$f")"
     done
   fi
-  if [[ -f "$VOS_HOME/state/last_briefing.md" ]]; then
-    blob+=$'\n# LAST BRIEFING\n'"$(cat "$VOS_HOME/state/last_briefing.md")"
-  fi
+  # Skip last_briefing in context — can bloat tokens and confuse boot
   printf '%s' "$blob"
 }
 
