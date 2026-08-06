@@ -1,0 +1,32 @@
+# Copy to ~/.vos/policy.yaml to customize. Defaults are safe.
+
+mode: sidecar   # never rewrite host agent configs
+
+confirm:
+  send_email: true
+  git_push: true
+  cloud_spend: true
+  destructive: true
+
+allow_paths:
+  - ~/vos
+  - ~/.vos
+  - ~/🏥 MEDICAL_AI_RESEARCH/nfnexusgnn
+  - ~/.claude/projects
+  - ~/.founder_os
+
+deny_paths:
+  - ~/.ssh
+  - ~/.gnupg
+  - "**/secrets/**"
+  - "**/.env"
+
+voice:
+  stt: local_whisper   # local_whisper | pipe | none
+  tts: macos_say       # macos_say | none
+  max_record_seconds: 45
+  stop_phrases:
+    - stop
+    - goodbye
+    - cancel
+    - that's all

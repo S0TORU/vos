@@ -1,0 +1,335 @@
+#!/bin/zsh
+# VOS — Voice Operating System CLI (sidecar; does not rewrite agent configs)
+set -euo pipefail
+
+VOS_REPO="${VOS_REPO:-$HOME/vos}"
+VOS_HOME="${VOS_HOME:-$HOME/.vos}"
+export VOS_REPO VOS_HOME
+
+# Prefer repo bin helpers when running from source
+PATH="$VOS_REPO/bin:$PATH"
+export PATH
+
+usage() {
+  cat <<'EOF'
+VOS — Voice Operating System
+
+  vos install          Sync pack → ~/.vos and link ~/bin/vos
+  vos recap            Boot briefing (memory + Ready)
+  vos ask <text| ->    Ask conductor (text). "-" reads stdin
+  vos listen [secs]    Record mic → Whisper → ask → speak answer
+  vos talk [secs]      Multi-turn voice loop (stop / goodbye to exit)
+  vos speak <text>     TTS only (macOS say)
+  vos gmail <query>    Gmail triage via gws if available
+  vos status           Tools + paths health check
+  vos doctor           Alias for status
+
+Environment:
+  VOS_HOME     default ~/.vos
+  VOS_REPO     default ~/vos
+  VOS_MODEL    whisper ggml path (optional)
+  VOS_CONDUCTOR  grok | offline | offline  (default: auto)
+EOF
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+resolve_grok() {
+  if have grok; then command -v grok
+  elif [[ -x "$HOME/.grok/bin/grok" ]]; then echo "$HOME/.grok/bin/grok"
+  else echo ""
+  fi
+}
+
+resolve_whisper_model() {
+  if [[ -n "${VOS_MODEL:-}" && -f "$VOS_MODEL" ]]; then
+    echo "$VOS_MODEL"
+    return
+  fi
+  local c
+  for c in \
+    "$HOME/.whisper-models/ggml-base.en.bin" \
+    "$HOME/.whisper-models/ggml-small.en.bin" \
+    "$HOME/Library/Application Support/superwhisper/ggml-small.en.bin" \
+    /opt/homebrew/Cellar/whisper-cpp/*/share/whisper-cpp/for-tests-ggml-tiny.bin
+  do
+    # expand glob carefully
+    for f in $~c(N); do
+      if [[ -f "$f" ]]; then
+        echo "$f"
+        return
+      fi
+    done
+  done
+  echo ""
+}
+
+ensure_home() {
+  if [[ ! -d "$VOS_HOME" ]]; then
+    echo "VOS_HOME missing ($VOS_HOME). Run: vos install" >&2
+    exit 1
+  fi
+}
+
+cmd_install() {
+  exec "$VOS_REPO/scripts/install.sh"
+}
+
+cmd_status() {
+  echo "VOS_REPO=$VOS_REPO"
+  echo "VOS_HOME=$VOS_HOME"
+  echo -n "whisper-cli: "; have whisper-cli && whisper-cli --help >/dev/null 2>&1 && echo ok || echo MISSING
+  echo -n "ffmpeg: "; have ffmpeg && echo ok || echo MISSING
+  echo -n "say: "; have say && echo ok || echo MISSING
+  local m; m="$(resolve_whisper_model)"
+  echo "whisper model: ${m:-MISSING}"
+  local g; g="$(resolve_grok)"
+  echo "grok: ${g:-MISSING (offline recap still works)}"
+  for t in claude codex prime-agent hermes orca gws; do
+    if have "$t"; then echo "$t: ok"; else echo "$t: -"; fi
+  done
+  [[ -f "$VOS_HOME/SOUL.md" ]] && echo "soul: ok" || echo "soul: missing (run vos install)"
+  [[ -f "$VOS_HOME/memory/MEMORY.md" ]] && echo "memory: ok" || echo "memory: missing"
+}
+
+load_context_blob() {
+  local blob=""
+  [[ -f "$VOS_HOME/SOUL.md" ]] && blob+=$'\n'"$(cat "$VOS_HOME/SOUL.md")"
+  if [[ -d "$VOS_HOME/memory" ]]; then
+    blob+=$'\n# MEMORY INDEX\n'
+    [[ -f "$VOS_HOME/memory/MEMORY.md" ]] && blob+="$(cat "$VOS_HOME/memory/MEMORY.md")"
+    # Load all sibling memory files (simple + reliable; no markdown parse)
+    local f
+    for f in "$VOS_HOME/memory"/*.md(N); do
+      [[ "$(basename "$f")" == "MEMORY.md" ]] && continue
+      blob+=$'\n--- '"$(basename "$f")"$' ---\n'"$(cat "$f")"
+    done
+  fi
+  if [[ -f "$VOS_HOME/state/last_briefing.md" ]]; then
+    blob+=$'\n# LAST BRIEFING\n'"$(cat "$VOS_HOME/state/last_briefing.md")"
+  fi
+  printf '%s' "$blob"
+}
+
+cmd_recap() {
+  ensure_home
+  local skill="$VOS_HOME/skills/recap/SKILL.md"
+  [[ -f "$skill" ]] || skill="$VOS_REPO/pack/skills/recap/SKILL.md"
+  local ctx; ctx="$(load_context_blob)"
+  local prompt
+  prompt="$(cat "$skill")"$'\n\n# LOADED CONTEXT\n'"$ctx"$'\n\nExecute the recap now.'
+
+  mkdir -p "$VOS_HOME/state"
+  local out=""
+  local g; g="$(resolve_grok)"
+  if [[ -n "$g" && "${VOS_CONDUCTOR:-auto}" != "offline" ]]; then
+    out="$("$g" -p "$prompt" 2>/dev/null || true)"
+  fi
+  if [[ -z "${out// }" ]]; then
+    out="$(offline_recap)"
+  fi
+  printf '%s\n' "$out" | tee "$VOS_HOME/state/last_briefing.md"
+}
+
+offline_recap() {
+  cat <<EOF
+## Who you are
+Aanuoluwapo Oshakuade — Elyris / LURA founder. VOS is your personal voice OS sidecar.
+
+## Environment
+- Host: $(hostname -s 2>/dev/null || hostname)
+- VOS_HOME: $VOS_HOME
+- Grok conductor: $(resolve_grok || echo offline)
+- Whisper model: $(resolve_whisper_model || echo none)
+
+## What we've been building
+See ~/.vos/memory project files (LURA + VOS). Offline mode: no model synthesis.
+
+## Current state
+Memory pack installed. Run with Grok available for a full briefing.
+
+## What's next
+- vos ask "..."
+- vos listen  (voice)
+- Wire gmail / workers when ready
+
+## Watch items
+Do not rewrite agent global configs. Confirm before send/push/spend.
+
+Ready.
+EOF
+}
+
+cmd_ask() {
+  ensure_home
+  local user_text=""
+  if [[ "${1:-}" == "-" ]]; then
+    user_text="$(cat)"
+  else
+    user_text="$*"
+  fi
+  if [[ -z "${user_text// }" ]]; then
+    echo "usage: vos ask <text> | vos ask -" >&2
+    exit 1
+  fi
+
+  # Fast paths without LLM
+  local lower="${user_text:l}"
+  if [[ "$lower" == *"recap"* && ${#user_text} -lt 40 ]]; then
+    cmd_recap
+    return
+  fi
+
+  local ctx; ctx="$(load_context_blob)"
+  local prompt="You are VOS, a personal Mac operating agent.
+Follow SOUL and memory. Prefer short voice-friendly answers.
+Confirm before send_email, git_push, cloud_spend, destructive actions.
+You may describe shell commands; prefer tools already installed.
+
+# CONTEXT
+$ctx
+
+# USER
+$user_text
+"
+
+  mkdir -p "$VOS_HOME/state/sessions"
+  local ts; ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  local session="$VOS_HOME/state/sessions/${ts}.md"
+  {
+    echo "# session $ts"
+    echo "## user"
+    echo "$user_text"
+    echo "## assistant"
+  } >"$session"
+
+  local g; g="$(resolve_grok)"
+  local out=""
+  if [[ -n "$g" && "${VOS_CONDUCTOR:-auto}" != "offline" ]]; then
+    out="$("$g" -p "$prompt" 2>/dev/null || true)"
+  fi
+  if [[ -z "${out// }" ]]; then
+    out="(offline) Heard: $user_text
+
+Grok not available. Try: vos recap | vos status
+Or set conductor path. For Gmail: vos gmail <query> if gws is configured."
+  fi
+  printf '%s\n' "$out" | tee -a "$session"
+}
+
+cmd_speak() {
+  local text="$*"
+  [[ -n "$text" ]] || { echo "usage: vos speak <text>" >&2; exit 1; }
+  if have say; then
+    # strip markdown-ish noise for ears
+    local clean
+    clean="$(printf '%s' "$text" | sed -E 's/`//g; s/\*\*//g; s/^#+ //g' | head -c 4000)"
+    say "$clean"
+  else
+    echo "$text"
+  fi
+}
+
+cmd_listen() {
+  ensure_home
+  local secs="${1:-30}"
+  if ! have ffmpeg || ! have whisper-cli; then
+    echo "Need ffmpeg + whisper-cli for local STT. vos status" >&2
+    exit 1
+  fi
+  local model; model="$(resolve_whisper_model)"
+  if [[ -z "$model" ]]; then
+    echo "No whisper model found. Put ggml-*.bin in ~/.whisper-models/" >&2
+    exit 1
+  fi
+
+  mkdir -p "$VOS_HOME/state"
+  local wav="$VOS_HOME/state/last_listen.wav"
+  echo "Listening ${secs}s (local mic)… speak, then wait." >&2
+  # avfoundation :0 default mic on macOS; silence on fail
+  if ! ffmpeg -y -hide_banner -loglevel error \
+      -f avfoundation -i ":0" -t "$secs" -ar 16000 -ac 1 "$wav" 2>/tmp/vos-ffmpeg.err; then
+    echo "Mic capture failed. See /tmp/vos-ffmpeg.err — grant Terminal mic permission if needed." >&2
+    cat /tmp/vos-ffmpeg.err >&2 || true
+    exit 1
+  fi
+
+  echo "Transcribing…" >&2
+  local transcript
+  transcript="$(whisper-cli -m "$model" -f "$wav" -nt 2>/dev/null | sed '/^$/d' | tail -n +1)"
+  # whisper-cli often prints timestamps; take last non-empty text lines
+  transcript="$(printf '%s\n' "$transcript" | sed -E 's/\[[0-9:.]+ --> [0-9:.]+\]//g' | tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//')"
+  if [[ -z "${transcript// }" ]]; then
+    echo "Empty transcript." >&2
+    exit 1
+  fi
+  echo "You: $transcript" >&2
+  local answer
+  answer="$(cmd_ask "$transcript")"
+  printf '%s\n' "$answer"
+  cmd_speak "$answer" || true
+}
+
+cmd_talk() {
+  local secs="${1:-25}"
+  echo "VOS talk loop. Say stop / goodbye to exit." >&2
+  while true; do
+    local answer
+    if ! answer="$(cmd_listen "$secs")"; then
+      echo "listen failed; retrying in 1s…" >&2
+      sleep 1
+      continue
+    fi
+    local lower="${answer:l}"
+    # Also check last user transcript is awkward; check spoken stop in answer path via state
+    # Simpler: re-read last session user line
+    local last_user
+    last_user="$(ls -t "$VOS_HOME/state/sessions"/*.md 2>/dev/null | head -1 | xargs -I{} sed -n '/^## user$/,/^## assistant$/p' {} 2>/dev/null | sed '1d;$d' | tr '\n' ' ')"
+    local ul="${last_user:l}"
+    if [[ "$ul" == *stop* || "$ul" == *goodbye* || "$ul" == *cancel* || "$ul" == *"that's all"* || "$ul" == *"thats all"* ]]; then
+      cmd_speak "Shutting down VOS voice loop. Ready when you are."
+      echo "Bye." >&2
+      break
+    fi
+  done
+}
+
+cmd_gmail() {
+  local q="$*"
+  if ! have gws; then
+    echo "gws not installed. Install Google Workspace CLI or skip." >&2
+    exit 1
+  fi
+  # Read-only triage by default — never send from this path
+  echo "Gmail query (read-only intent): $q"
+  # Best-effort; exact subcommands vary by gws version
+  if gws gmail users messages list --params '{"userId":"me","q":"'"$q"'","maxResults":10}' 2>/dev/null; then
+    :
+  else
+    echo "gws list failed — use your elyris-gmail skill from Grok or: gws gmail --help" >&2
+    exit 1
+  fi
+}
+
+main() {
+  local cmd="${1:-}"
+  [[ -n "$cmd" ]] || { usage; exit 0; }
+  shift || true
+  case "$cmd" in
+    install) cmd_install "$@" ;;
+    recap) cmd_recap "$@" ;;
+    ask) cmd_ask "$@" ;;
+    listen) cmd_listen "$@" ;;
+    talk) cmd_talk "$@" ;;
+    speak) cmd_speak "$@" ;;
+    gmail) cmd_gmail "$@" ;;
+    status|doctor) cmd_status "$@" ;;
+    -h|--help|help) usage ;;
+    *)
+      # Bare text: treat as ask
+      cmd_ask "$cmd" "$@"
+      ;;
+  esac
+}
+
+main "$@"

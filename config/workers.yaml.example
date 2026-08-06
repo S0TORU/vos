@@ -1,0 +1,28 @@
+# Optional worker map. VOS calls these CLIs; it does not reconfigure them.
+
+conductor:
+  # Preferred cortex for recap / routing / research
+  command: grok
+  fallback: shell
+
+workers:
+  claude:
+    command: claude
+    when: "LURA product code, doctrine, tests, deep review"
+  codex:
+    command: codex
+    when: "volume implementation (Azure profile already yours)"
+  prime:
+    command: prime-agent
+    when: "long-horizon multi-agent coding"
+  hermes:
+    command: hermes
+    when: "local / offline LURA soul"
+  orca:
+    command: orca
+    when: "worktrees, agent terminals, browser automation"
+
+tools:
+  gmail: gws
+  hindsight: python3 ~/bin/hindsight-cli.py
+  cbm: codebase-memory-mcp

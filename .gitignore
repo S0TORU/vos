@@ -1,0 +1,24 @@
+# Runtime (never commit personal memory)
+.vos-runtime/
+dist/
+*.app/Contents/MacOS/vos-launch
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+*.swp
+*~
+
+# Audio / session dumps
+state/sessions/
+*.wav
+*.mp3
+last_briefing.md
+
+# Models (large)
+*.bin
+!pack/**/*
