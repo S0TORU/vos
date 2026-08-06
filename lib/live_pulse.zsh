@@ -25,11 +25,10 @@ vos_claude_memory_dir() {
   fi
 }
 
-# Top priority lines from Claude MEMORY.md index only (pointers, ~2–3k chars)
+# Top priority lines from Claude MEMORY.md index only (compact)
 vos_claude_memory_index_snippet() {
   local d; d="$(vos_claude_memory_dir)"
   [[ -n "$d" && -f "$d/MEMORY.md" ]] || return 0
-  # Priority section + first star bullets only
   python3 - "$d/MEMORY.md" <<'PY'
 import sys
 from pathlib import Path
@@ -49,14 +48,13 @@ for line in lines:
     if in_pri:
         if line.strip().startswith("- ★") or line.strip().startswith("- *"):
             stars += 1
-            if stars <= 8:
-                # cap each bullet
-                out.append(line[:400])
+            if stars <= 5:
+                out.append(line[:220])
         elif stars == 0 and line.strip():
-            out.append(line[:200])
+            out.append(line[:120])
 snip = "\n".join(out)
-if len(snip) > 3500:
-    snip = snip[:3500] + "\n…(truncated)"
+if len(snip) > 1600:
+    snip = snip[:1600] + "\n…(truncated)"
 print(snip)
 PY
 }

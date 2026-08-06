@@ -183,22 +183,44 @@ cmd_status() {
   [[ -f "$VOS_HOME/memory/MEMORY.md" ]] && echo "memory: ok" || echo "memory: missing"
 }
 
+# Cap a file to N chars (head). Context efficiency.
+vos_cap_file() {
+  local f="$1" n="${2:-2500}"
+  [[ -f "$f" ]] || return 0
+  head -c "$n" "$f"
+  local sz; sz=$(wc -c <"$f" | tr -d ' ')
+  if [[ "${sz:-0}" -gt "$n" ]]; then
+    printf '\n…(truncated %s)\n' "$(basename "$f")"
+  fi
+}
+
 load_context_blob() {
+  # Hard budget so recap/ask stay cheap and sharp (override with VOS_CTX_MAX)
+  local max="${VOS_CTX_MAX:-14000}"
   local blob=""
-  [[ -f "$VOS_HOME/SOUL.md" ]] && blob+=$'\n'"$(cat "$VOS_HOME/SOUL.md")"
+  [[ -f "$VOS_HOME/SOUL.md" ]] && blob+=$'\n'"$(vos_cap_file "$VOS_HOME/SOUL.md" 1800)"
   if [[ -d "$VOS_HOME/memory" ]]; then
-    blob+=$'\n# MEMORY INDEX\n'
-    [[ -f "$VOS_HOME/memory/MEMORY.md" ]] && blob+="$(cat "$VOS_HOME/memory/MEMORY.md")"
-    # Load all sibling memory files (simple + reliable; no markdown parse)
-    local f
+    blob+=$'\n# MEMORY\n'
+    [[ -f "$VOS_HOME/memory/MEMORY.md" ]] && blob+="$(vos_cap_file "$VOS_HOME/memory/MEMORY.md" 800)"
+    local f base
     for f in "$VOS_HOME/memory"/*.md(N); do
-      [[ "$(basename "$f")" == "MEMORY.md" ]] && continue
-      blob+=$'\n--- '"$(basename "$f")"$' ---\n'"$(cat "$f")"
+      base="$(basename "$f")"
+      [[ "$base" == "MEMORY.md" ]] && continue
+      # user_facts: keep only last lines (newest durable notes)
+      if [[ "$base" == "user_facts.md" ]]; then
+        blob+=$'\n--- user_facts (tail) ---\n'
+        blob+="$(tail -n 40 "$f" | head -c 2000)"
+        continue
+      fi
+      blob+=$'\n--- '"$base"$' ---\n'"$(vos_cap_file "$f" 1200)"
     done
   fi
-  # Distilled live signals (TODO, git, Claude MEMORY index stars) — not full jsonl
+  # Distilled live signals + last-2 agent sessions (already size-capped in python)
   if typeset -f vos_build_live_pulse >/dev/null 2>&1; then
     blob+=$'\n\n'"$(vos_build_live_pulse)"
+  fi
+  if [[ ${#blob} -gt $max ]]; then
+    blob="${blob:0:$max}"$'\n…(context budget hit — pulse + memory truncated for efficiency)\n'
   fi
   printf '%s' "$blob"
 }

@@ -14,9 +14,9 @@ from pathlib import Path
 
 HOME = Path.home()
 N_SESSIONS = int(os.environ.get("VOS_SESSION_N", "2"))
-MAX_USER_LINES = int(os.environ.get("VOS_SESSION_USER_LINES", "10"))
-MAX_LINE = int(os.environ.get("VOS_SESSION_LINE_CHARS", "160"))
-MAX_TOTAL = int(os.environ.get("VOS_SESSION_DIGEST_CHARS", "9000"))
+MAX_USER_LINES = int(os.environ.get("VOS_SESSION_USER_LINES", "6"))
+MAX_LINE = int(os.environ.get("VOS_SESSION_LINE_CHARS", "120"))
+MAX_TOTAL = int(os.environ.get("VOS_SESSION_DIGEST_CHARS", "6500"))
 
 
 def _clip(s: str, n: int = MAX_LINE) -> str:
@@ -232,6 +232,59 @@ def digest_grok(n: int = N_SESSIONS) -> str:
     return "\n".join(blocks)
 
 
+def digest_prime(n: int = N_SESSIONS) -> str:
+    root = HOME / ".prime" / "agent" / "sessions"
+    if not root.is_dir():
+        return "(no Prime sessions)"
+    files = sorted(root.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)[:n]
+    if not files:
+        return "(no Prime session jsonl)"
+    blocks = []
+    for f in files:
+        mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        users: list[str] = []
+        cwd = ""
+        try:
+            with f.open("r", errors="replace") as fh:
+                fh.seek(0, 2)
+                size = fh.tell()
+                # header for cwd
+                fh.seek(0)
+                first = fh.readline()
+                try:
+                    meta = json.loads(first)
+                    if meta.get("type") == "session":
+                        cwd = str(meta.get("cwd") or "")[-50:]
+                except Exception:
+                    pass
+                fh.seek(max(0, size - 1_200_000))
+                if size > 1_200_000:
+                    fh.readline()
+                for line in fh:
+                    try:
+                        o = json.loads(line)
+                    except Exception:
+                        continue
+                    if o.get("type") != "message":
+                        continue
+                    msg = o.get("message") or {}
+                    if msg.get("role") != "user":
+                        continue
+                    text = _extract_text(msg.get("content"))
+                    if _skip_user_noise(text):
+                        continue
+                    users.append(_clip(text))
+        except Exception as e:
+            blocks.append(f"- {f.stem[:14]}… ({mtime}): {e}")
+            continue
+        tail = users[-MAX_USER_LINES:]
+        blocks.append(
+            f"- session `{f.stem[:14]}…` cwd=`{cwd}` mtime={mtime}\n"
+            + ("\n".join(f"    user: {u}" for u in tail) if tail else "    (no user lines)")
+        )
+    return "\n".join(blocks)
+
+
 def digest_orca(n: int = N_SESSIONS) -> str:
     roots = [
         HOME / "Library/Application Support/orca/codex-runtime-home/home/sessions",
@@ -301,10 +354,13 @@ def main() -> None:
         "## Grok Build",
         digest_grok(),
         "",
+        "## Prime Agent",
+        digest_prime(),
+        "",
         "## Orca (hosted agent surface)",
         digest_orca(),
         "",
-        "NOTE: Full session bodies not loaded. Orca terminals usually surface Claude/Codex/Grok sessions already listed.",
+        "NOTE: Full bodies not loaded — last 2 sessions × few user lines. Prefer LIVE PULSE + memory for truth.",
     ]
     out = "\n".join(parts)
     if len(out) > MAX_TOTAL:
