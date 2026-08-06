@@ -151,10 +151,15 @@ def conversational_brief(t: str) -> str:
 
     spoken = " ".join(bits)
     spoken = re.sub(r"\s+", " ", spoken).strip()
-    # hard cap ~45s speech at ~2.5 words/sec ≈ 110 words
+    # strip unsexy path/sha/env dumps from speech
+    spoken = re.sub(r"`[^`]+`", " ", spoken)
+    spoken = re.sub(r"(?i)(/Users|/workspace|~/)[^\s,;]+", " ", spoken)
+    spoken = re.sub(r"\b[0-9a-f]{7,40}\b", " ", spoken)
+    spoken = re.sub(r"\s+", " ", spoken).strip()
+    # hard cap ~35s speech
     words = spoken.split()
-    if len(words) > 120:
-        spoken = " ".join(words[:120]) + "."
+    if len(words) > 95:
+        spoken = " ".join(words[:95]) + "."
     if not spoken.endswith((".", "!", "?")):
         spoken += "."
     return spoken
