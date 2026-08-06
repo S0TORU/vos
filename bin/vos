@@ -19,6 +19,10 @@ if [[ -f "$VOS_REPO/lib/live_pulse.zsh" ]]; then
   # shellcheck disable=SC1091
   source "$VOS_REPO/lib/live_pulse.zsh"
 fi
+if [[ -f "$VOS_REPO/lib/voice.zsh" ]]; then
+  # shellcheck disable=SC1091
+  source "$VOS_REPO/lib/voice.zsh"
+fi
 
 usage() {
   cat <<'EOF'
@@ -28,10 +32,15 @@ VOS — Voice Operating System
   vos recap                Boot briefing (memory + Ready)
   vos ask <text|->         Chat with DeepSeek Flash (Fireworks)
   vos plan <text>          Route: plan JSON → tool → summary (switchboard)
-  vos listen [secs]        Mic → Whisper → smart route → speak
-  vos talk [secs]          Multi-turn voice loop
-  vos speak <text>         TTS only (read text aloud — not the live HUD)
+  vos listen [max]        Mic → VAD auto-stop → Whisper → route → speak
+  vos talk [max]          Multi-turn voice loop (say "stop" to end)
+  vos speak [--async] <t> TTS (--async plays without blocking; --voice X)
   vos live                 Floating on-screen voice HUD (SuperWhisper-style)
+
+Memory & history:
+  vos remember <fact>      Store a durable fact in ~/.vos/memory/user_facts.md
+  vos sessions [n]         List recent voice/text sessions
+  vos session <id|path>    Show one session
 
 Workers (direct tools — no config rewrite):
   vos tools                List allowlisted tools
@@ -196,6 +205,12 @@ load_context_blob() {
 
 cmd_recap() {
   ensure_home
+  # --short: print the voice TL;DR from the last briefing only (no model call)
+  if [[ "${1:-}" == "--short" ]]; then
+    [[ -f "$VOS_HOME/state/last_briefing.md" ]] || cmd_recap >/dev/null 2>&1
+    vos_briefing_short "$VOS_HOME/state/last_briefing.md"
+    return
+  fi
   local skill="$VOS_HOME/skills/recap/SKILL.md"
   [[ -f "$skill" ]] || skill="$VOS_REPO/pack/skills/recap/SKILL.md"
   local ctx; ctx="$(load_context_blob)"
@@ -219,7 +234,13 @@ $ctx"
   if [[ -z "${out// }" ]]; then
     out="$(offline_recap)"
   fi
-  printf '%s\n' "$out" | tee "$VOS_HOME/state/last_briefing.md"
+  printf '%s\n' "$out" > "$VOS_HOME/state/last_briefing.md"
+  # Voice mode: speak a short TL;DR (sections + first lines), still save the full file
+  if [[ "${VOS_VOICE_SHORT:-0}" == "1" ]]; then
+    vos_briefing_short "$VOS_HOME/state/last_briefing.md"
+  else
+    cat "$VOS_HOME/state/last_briefing.md"
+  fi
 }
 
 offline_recap() {
@@ -346,19 +367,67 @@ DeepSeek conductor did not respond. Check:
 
 cmd_speak() {
   # TTS only — for floating live agent use: vos live
+  local async=0
+  while [[ "$1" == "--async" || "$1" == "--voice" || "$1" == "--to-file" ]]; do
+    case "$1" in
+      --async) async=1; shift ;;
+      --voice) shift; VOS_VOICE="${1:-}"; shift ;;
+      --to-file) shift; VOS_TTS_TEST_FILE="${1:-}"; shift ;;
+    esac
+  done
   if [[ -z "${1:-}" ]]; then
-    echo "vos speak = text-to-speech only." >&2
+    echo "vos speak = text-to-speech only (--async / --voice X / --to-file f)." >&2
     echo "For floating on-screen voice agent:  vos live" >&2
     exit 1
   fi
-  local text="$*"
-  if have say; then
-    local clean
-    clean="$(printf '%s' "$text" | sed -E 's/`//g; s/\*\*//g; s/^#+ //g' | head -c 4000)"
-    say "$clean"
+  if [[ "$async" == "1" ]]; then
+    vos_speak --async "$@"
+  elif [[ -n "${VOS_TTS_TEST_FILE:-}" ]]; then
+    vos_speak --to-file "$VOS_TTS_TEST_FILE" "$@"
   else
-    echo "$text"
+    vos_speak "$@"
   fi
+}
+
+cmd_sessions() {
+  ensure_home
+  local n="${1:-8}"
+  python3 - "$VOS_HOME/state/sessions" "$n" <<'PY'
+import os, sys, time
+from pathlib import Path
+d = Path(sys.argv[1]); n = int(sys.argv[2])
+if not d.is_dir():
+    print("no sessions yet", file=sys.stderr); sys.exit(0)
+files = sorted(d.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)[:n]
+for p in files:
+    ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(p.stat().st_mtime))
+    first = ""
+    try:
+        for line in p.read_text(errors="replace").splitlines():
+            if line.strip() == "## user" and first == "":
+                continue
+            if first == "" and line.strip() and not line.startswith("#"):
+                first = line.strip()
+                break
+    except Exception:
+        pass
+    print(f"{ts}  {p.stat().st_size:>6}B  {first[:92]} ({p.stem})")
+PY
+}
+
+cmd_session() {
+  ensure_home
+  local id="${1:-}"
+  [[ -n "$id" ]] || { echo "usage: vos session <id|path>" >&2; return 1; }
+  local f="$id"
+  [[ "$f" == */* ]] || f="$VOS_HOME/state/sessions/${id}.md"
+  [[ -f "$f" ]] || { echo "no session: $id (try: vos sessions)" >&2; return 1; }
+  cat "$f"
+}
+
+cmd_remember() {
+  ensure_home
+  vos_remember "$@"
 }
 
 cmd_live() {
@@ -371,7 +440,7 @@ cmd_live() {
       echo "swiftc missing — falling back to Terminal talk loop" >&2
       exec "$VOS_REPO/bin/vos" talk "${1:-25}"
     fi
-    swiftc -O -o "$bin" "$VOS_REPO/macos/VOSLive.swift" -framework Cocoa 2>"$VOS_HOME/state/build-hud.err" || {
+    swiftc -O -o "$bin" "$VOS_REPO/macos/VOSLive.swift" -framework Cocoa -framework AVFoundation 2>"$VOS_HOME/state/build-hud.err" || {
       echo "HUD build failed (see ~/.vos/state/build-hud.err). Fallback: vos talk" >&2
       exec "$VOS_REPO/bin/vos" talk "${1:-25}"
     }
@@ -385,65 +454,88 @@ cmd_live() {
 
 cmd_listen() {
   ensure_home
-  local secs="${1:-30}"
+  local max="${1:-$VOS_DEFAULT_MAX}"
   if ! have ffmpeg || ! have whisper-cli; then
     echo "Need ffmpeg + whisper-cli for local STT. vos status" >&2
     exit 1
   fi
-  local model; model="$(resolve_whisper_model)"
+  local model; model="$(vos_whisper_model)"
   if [[ -z "$model" ]]; then
     echo "No whisper model found. Put ggml-*.bin in ~/.whisper-models/" >&2
     exit 1
   fi
 
-  mkdir -p "$VOS_HOME/state"
-  local wav="$VOS_HOME/state/last_listen.wav"
-  echo "Listening ${secs}s (local mic)… speak, then wait." >&2
-  # avfoundation :0 default mic on macOS; silence on fail
-  if ! ffmpeg -y -hide_banner -loglevel error \
-      -f avfoundation -i ":0" -t "$secs" -ar 16000 -ac 1 "$wav" 2>/tmp/vos-ffmpeg.err; then
-    echo "Mic capture failed. See /tmp/vos-ffmpeg.err — grant Terminal mic permission if needed." >&2
-    cat /tmp/vos-ffmpeg.err >&2 || true
-    exit 1
+  VOS_DEFAULT_MAX="$max"
+  echo "● listening — speak, then pause (auto-stop, max ${max}s). Ctrl+C to abort." >&2
+  vos_listen_vad "$VOS_HOME/state/last_listen.wav"
+  local rc=$?
+  if [[ $rc -eq 2 ]]; then
+    echo "No speech heard." >&2
+    return 2
   fi
+  if [[ $rc -ne 0 ]]; then
+    echo "Mic capture failed — grant mic permission (System Settings → Privacy → Microphone) then retry." >&2
+    return 3
+  fi
+  # render the recorded level meter trail
+  vos_show_meter
 
-  echo "Transcribing…" >&2
+  echo "} transcribing…" >&2
   local transcript
-  transcript="$(whisper-cli -m "$model" -f "$wav" -nt 2>/dev/null | sed '/^$/d' | tail -n +1)"
-  # whisper-cli often prints timestamps; take last non-empty text lines
+  transcript="$(whisper-cli -m "$model" -f "$VOS_HOME/state/last_listen.wav" -nt 2>/dev/null)"
   transcript="$(printf '%s\n' "$transcript" | sed -E 's/\[[0-9:.]+ --> [0-9:.]+\]//g' | tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//')"
   if [[ -z "${transcript// }" ]]; then
     echo "Empty transcript." >&2
-    exit 1
+    return 2
   fi
   echo "You: $transcript" >&2
+
+  echo "} thinking…" >&2
   local answer
   answer="$(cmd_ask "$transcript")"
   printf '%s\n' "$answer"
-  cmd_speak "$answer" || true
+  cmd_speak --async "$answer" || cmd_speak "$answer" || true
 }
 
 cmd_talk() {
-  local secs="${1:-25}"
-  echo "VOS talk loop. Say stop / goodbye to exit." >&2
+  local max="${1:-$VOS_DEFAULT_MAX}"
+  echo "VOS talk loop — speak, then pause. Say stop / goodbye to exit." >&2
   while true; do
-    local answer
-    if ! answer="$(cmd_listen "$secs")"; then
-      echo "listen failed; retrying in 1s…" >&2
+    echo "● listening…" >&2
+    VOS_DEFAULT_MAX="$max"
+    vos_listen_vad "$VOS_HOME/state/last_listen.wav"
+    local rc=$?
+    if [[ $rc -eq 2 ]]; then
+      echo "(no speech — listening again)" >&2
+      continue
+    fi
+    if [[ $rc -ne 0 ]]; then
+      echo "mic error; retrying in 1s…" >&2
       sleep 1
       continue
     fi
-    local lower="${answer:l}"
-    # Also check last user transcript is awkward; check spoken stop in answer path via state
-    # Simpler: re-read last session user line
-    local last_user
-    last_user="$(ls -t "$VOS_HOME/state/sessions"/*.md 2>/dev/null | head -1 | xargs -I{} sed -n '/^## user$/,/^## assistant$/p' {} 2>/dev/null | sed '1d;$d' | tr '\n' ' ')"
-    local ul="${last_user:l}"
-    if [[ "$ul" == *stop* || "$ul" == *goodbye* || "$ul" == *cancel* || "$ul" == *"that's all"* || "$ul" == *"thats all"* ]]; then
-      cmd_speak "Shutting down VOS voice loop. Ready when you are."
+    vos_show_meter
+
+    echo "} transcribing…" >&2
+    local model; model="$(vos_whisper_model)"
+    local transcript
+    transcript="$(whisper-cli -m "$model" -f "$VOS_HOME/state/last_listen.wav" -nt 2>/dev/null)"
+    transcript="$(printf '%s\n' "$transcript" | sed -E 's/\[[0-9:.]+ --> [0-9:.]+\]//g' | tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//')"
+    if [[ -z "${transcript// }" ]]; then
+      echo "(empty transcript — listening again)" >&2
+      continue
+    fi
+    echo "You: $transcript" >&2
+
+    echo "} thinking…" >&2
+    local answer
+    answer="$(vos_voice_intent "$transcript")"
+    if [[ "$answer" == "__VOS_STOP__" ]]; then
       echo "Bye." >&2
       break
     fi
+    printf '%s\n' "$answer"
+    cmd_speak --async "$answer" || cmd_speak "$answer" || true
   done
 }
 
@@ -459,6 +551,9 @@ main() {
     listen) cmd_listen "$@" ;;
     talk) cmd_talk "$@" ;;
     speak) cmd_speak "$@" ;;
+    remember) cmd_remember "$@" ;;
+    sessions) cmd_sessions "$@" ;;
+    session) cmd_session "$@" ;;
     live|hud|float) cmd_live "$@" ;;
     tools) vos_tools_list ;;
     hermes) vos_tool_hermes "$@" ;;

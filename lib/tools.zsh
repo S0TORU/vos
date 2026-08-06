@@ -14,6 +14,9 @@ VOS tools (allowlisted)
   gmail <query>       Gmail list/triage via gws (read-only)
   shell <cmd>         Restricted shell (allowlist prefixes only)
   speak <text>        TTS
+  sessions [n]        List recent session log topics
+  session <id>        Show one session
+  remember <fact>     Store a durable fact (~/.vos/memory/user_facts.md)
 
 Also: vos run <tool> [args...]
       vos plan <text>   → JSON plan → execute → summary (router)
@@ -165,6 +168,9 @@ vos_tool_run() {
     gmail) vos_tool_gmail "$@" ;;
     shell) vos_tool_shell "$@" ;;
     speak) cmd_speak "$@" ;;
+    sessions) cmd_sessions "$@" ;;
+    session) cmd_session "$@" ;;
+    remember) cmd_remember "$@" ;;
     *)
       echo "unknown tool: $tool" >&2
       vos_tools_list >&2
