@@ -59,8 +59,10 @@ resolve_grok() {
 
 # Run a one-shot prompt through the conductor. Prints model text to stdout.
 # Brain = DeepSeek Flash on Fireworks (via Grok Build CLI as the host — model is NOT xAI Grok weights).
+# $2 = mode: "chat" (default, max-turns 1, stable on Fireworks) | "tools" (allow agent tools)
 conductor_run() {
   local prompt="$1"
+  local mode="${2:-chat}"
   if [[ "${VOS_CONDUCTOR}" == "offline" ]]; then
     return 1
   fi
@@ -75,13 +77,19 @@ conductor_run() {
   fi
   mkdir -p "$VOS_HOME/state"
   local err="$VOS_HOME/state/conductor.err"
-  # Identity in user prompt (avoid --system-prompt-override; can 400 on Fireworks)
   local full
-  full="[HOST] You are VOS (Voice OS). Inference model: ${VOS_LLM_MODEL} on Fireworks (DeepSeek). The CLI host is Grok Build — do not claim to be xAI Grok the product. Be concise and tool-capable.
+  full="[HOST] You are VOS (Voice OS). Inference: ${VOS_LLM_MODEL} on Fireworks (DeepSeek). Host CLI is Grok Build — do not claim to be xAI Grok the product. Be concise.
 [TASK]
 $prompt"
-  # -p one-shot; -m deepseek-flash; --always-approve so tools can run in voice mode
-  if ! "$g" -m "$VOS_LLM_MODEL" --always-approve -p "$full" 2>"$err"; then
+  # Fireworks + multi-turn tool loops can 400 (model_id field). Default chat = single turn.
+  local -a args
+  args=(-m "$VOS_LLM_MODEL" -p "$full")
+  if [[ "$mode" == "tools" ]]; then
+    args+=(--always-approve --max-turns 8)
+  else
+    args+=(--max-turns 1 --disable-web-search)
+  fi
+  if ! "$g" "${args[@]}" 2>"$err"; then
     if [[ -s "$err" ]]; then
       echo "conductor error (see $err)" >&2
       head -c 400 "$err" >&2 || true
@@ -174,7 +182,7 @@ cmd_recap() {
 
   mkdir -p "$VOS_HOME/state"
   local out=""
-  out="$(conductor_run "$prompt" || true)"
+  out="$(conductor_run "$prompt" chat || true)"
   if [[ -z "${out// }" ]]; then
     out="$(offline_recap)"
   fi
@@ -232,6 +240,12 @@ cmd_ask() {
   fi
 
   local ctx; ctx="$(load_context_blob)"
+  # "run" / "execute" / "shell" → tools mode; else stable single-turn chat
+  local mode=chat
+  if [[ "$lower" == *run\ * || "$lower" == *execute* || "$lower" == *shell* || "$lower" == *dispatch* || "$lower" == *"open terminal"* ]]; then
+    mode=tools
+  fi
+
   local prompt="You are VOS, a personal Mac operating agent.
 Follow SOUL and memory. Prefer short voice-friendly answers.
 Confirm before send_email, git_push, cloud_spend, destructive actions.
@@ -255,7 +269,7 @@ $user_text
   } >"$session"
 
   local out=""
-  out="$(conductor_run "$prompt" || true)"
+  out="$(conductor_run "$prompt" "$mode" || true)"
   if [[ -z "${out// }" ]]; then
     out="(offline) Heard: $user_text
 
@@ -263,6 +277,7 @@ DeepSeek conductor did not respond. Check:
   vos status
   FIREWORKS_API_KEY in ~/.grok/.env.fireworks
   grok -m deepseek-flash -p \"ping\"
+  cat ~/.vos/state/conductor.err
 "
   fi
   printf '%s\n' "$out" | tee -a "$session"
