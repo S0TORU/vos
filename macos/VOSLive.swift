@@ -87,6 +87,8 @@ final class PillButton: NSButton {
     var filled = false {
         didSet { needsDisplay = true }
     }
+    var fontSize: CGFloat = 12
+    var compact = false
 
     override func draw(_ dirtyRect: NSRect) {
         let r = bounds.insetBy(dx: 0.5, dy: 0.5)
@@ -94,34 +96,101 @@ final class PillButton: NSButton {
         if filled {
             VosTheme.accent.setFill()
             path.fill()
-            (isHighlighted ? NSColor.black.withAlphaComponent(0.7) : NSColor.black.withAlphaComponent(0.88)).set()
         } else {
             VosTheme.well.setFill()
             path.fill()
             VosTheme.line.setStroke()
             path.lineWidth = 1
             path.stroke()
-            (isHighlighted ? VosTheme.ink : VosTheme.ink2).set()
         }
         let p = NSMutableParagraphStyle()
         p.alignment = .center
         let title = self.title as NSString
-        let font = NSFont.systemFont(ofSize: 11.5, weight: .medium)
+        let font = NSFont.systemFont(ofSize: fontSize, weight: .medium)
+        let fg: NSColor = filled
+            ? NSColor.black.withAlphaComponent(isHighlighted ? 0.7 : 0.9)
+            : (isHighlighted ? VosTheme.ink : VosTheme.ink2)
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font,
-            .foregroundColor: filled ? NSColor.black.withAlphaComponent(0.9) : VosTheme.ink,
+            .foregroundColor: fg,
             .paragraphStyle: p,
         ]
         let size = title.size(withAttributes: attrs)
-        title.draw(in: NSRect(x: 0, y: (bounds.height - size.height) / 2 - 0.5, width: bounds.width, height: size.height), withAttributes: attrs)
+        title.draw(
+            in: NSRect(x: 0, y: (bounds.height - size.height) / 2 - 0.5, width: bounds.width, height: size.height),
+            withAttributes: attrs
+        )
     }
 
-    override var intrinsicContentSize: NSSize { NSSize(width: 88, height: 28) }
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: compact ? 72 : 96, height: compact ? 24 : 30)
+    }
+}
+
+// MARK: - Text mode chips (replaces ugly NSSegmentedControl)
+
+final class ModeChips: NSView {
+    var onChange: ((Int) -> Void)?
+    private let a = PillButton(title: "Transcript", target: nil, action: nil)
+    private let b = PillButton(title: "Activity", target: nil, action: nil)
+    private(set) var selected = 0
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        a.compact = true
+        b.compact = true
+        a.fontSize = 11
+        b.fontSize = 11
+        a.filled = true
+        b.filled = false
+        a.target = self
+        b.target = self
+        a.action = #selector(tapA)
+        b.action = #selector(tapB)
+        addSubview(a)
+        addSubview(b)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        let gap: CGFloat = 8
+        let w = (bounds.width - gap) / 2
+        a.frame = NSRect(x: 0, y: 0, width: w, height: bounds.height)
+        b.frame = NSRect(x: w + gap, y: 0, width: w, height: bounds.height)
+    }
+
+    @objc func tapA() { select(0) }
+    @objc func tapB() { select(1) }
+
+    func select(_ i: Int) {
+        selected = i
+        a.filled = i == 0
+        b.filled = i == 1
+        a.needsDisplay = true
+        b.needsDisplay = true
+        onChange?(i)
+    }
 }
 
 // MARK: - HUD
 
 final class HudController: NSObject, AVAudioRecorderDelegate {
+    // Layout constants — single source of spacing truth
+    private enum L {
+        static let W: CGFloat = 380
+        static let H: CGFloat = 340
+        static let pad: CGFloat = 16
+        static let gap: CGFloat = 10
+        static let headerH: CGFloat = 28
+        static let meterH: CGFloat = 6
+        static let chipsH: CGFloat = 26
+        static let hintH: CGFloat = 16
+        static let btnH: CGFloat = 30
+        static let bottomPad: CGFloat = 14
+    }
+
     let panel: NSPanel
     let chrome = NSVisualEffectView()
     let titleLabel = NSTextField(labelWithString: "VOS")
@@ -132,8 +201,8 @@ final class HudController: NSObject, AVAudioRecorderDelegate {
     let talkButton = PillButton(title: "Talk", target: nil, action: nil)
     let recapButton = PillButton(title: "Recap", target: nil, action: nil)
     let quitButton = PillButton(title: "Quit", target: nil, action: nil)
-    let activityToggle = NSSegmentedControl(labels: ["Transcript", "Activity"], trackingMode: .selectOne, target: nil, action: nil)
-    let hintLabel = NSTextField(labelWithString: "Space hold · Esc cancel · R recap")
+    let modeChips = ModeChips(frame: .zero)
+    let hintLabel = NSTextField(labelWithString: "Space hold  ·  Esc cancel  ·  R recap")
     let scroll = NSScrollView()
     let well = NSView()
     private let activityStorage = NSMutableAttributedString()
@@ -156,9 +225,10 @@ final class HudController: NSObject, AVAudioRecorderDelegate {
     let home = FileManager.default.homeDirectoryForCurrentUser.path
 
     override init() {
-        let style: NSWindow.StyleMask = [.titled, .closable, .nonactivatingPanel, .fullSizeContentView]
+        // Borderless — no traffic-light collision with title
+        let style: NSWindow.StyleMask = [.borderless, .nonactivatingPanel, .fullSizeContentView]
         panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 352, height: 292),
+            contentRect: NSRect(x: 0, y: 0, width: L.W, height: L.H),
             styleMask: style, backing: .buffered, defer: false
         )
         super.init()
@@ -173,31 +243,28 @@ final class HudController: NSObject, AVAudioRecorderDelegate {
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.title = "VOS"
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.isMovableByWindowBackground = true
+        panel.becomesKeyOnlyIfNeeded = true
 
-        // Frosted glass base
+        // Frosted glass
         chrome.material = .hudWindow
         chrome.blendingMode = .behindWindow
         chrome.state = .active
         chrome.wantsLayer = true
-        chrome.layer?.cornerRadius = 14
+        chrome.layer?.cornerRadius = 16
         chrome.layer?.masksToBounds = true
-        chrome.frame = panel.contentView!.bounds
+        chrome.frame = NSRect(x: 0, y: 0, width: L.W, height: L.H)
         chrome.autoresizingMask = [.width, .height]
 
-        // Subtle border
         let border = CALayer()
         border.frame = chrome.bounds
-        border.cornerRadius = 14
+        border.cornerRadius = 16
         border.borderWidth = 1
-        border.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
+        border.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
         border.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         chrome.layer?.addSublayer(border)
 
@@ -205,89 +272,131 @@ final class HudController: NSObject, AVAudioRecorderDelegate {
         content.autoresizingMask = [.width, .height]
         chrome.addSubview(content)
 
-        // Header
-        titleLabel.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
+        // —— vertical stack from top ——
+        // y measured from bottom of content
+        let pad = L.pad
+        let innerW = L.W - pad * 2
+
+        // Bottom actions
+        let btnY = L.bottomPad
+        let btnGap: CGFloat = 10
+        let talkW: CGFloat = 112
+        let recapW: CGFloat = 100
+        let quitW: CGFloat = 88
+        // talk | recap ........ quit
+        talkButton.filled = true
+        talkButton.fontSize = 12.5
+        talkButton.frame = NSRect(x: pad, y: btnY, width: talkW, height: L.btnH)
+        talkButton.target = self
+        talkButton.action = #selector(onTalkToggle)
+
+        recapButton.fontSize = 12.5
+        recapButton.frame = NSRect(x: pad + talkW + btnGap, y: btnY, width: recapW, height: L.btnH)
+        recapButton.target = self
+        recapButton.action = #selector(onRecap)
+
+        quitButton.fontSize = 12.5
+        quitButton.frame = NSRect(x: L.W - pad - quitW, y: btnY, width: quitW, height: L.btnH)
+        quitButton.target = self
+        quitButton.action = #selector(onQuit)
+
+        // Hint row (full width, not truncated)
+        let hintY = btnY + L.btnH + 8
+        hintLabel.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        hintLabel.textColor = VosTheme.ink3
+        hintLabel.alignment = .center
+        hintLabel.lineBreakMode = .byTruncatingTail
+        hintLabel.frame = NSRect(x: pad, y: hintY, width: innerW, height: L.hintH)
+
+        // Mode chips
+        let chipsY = hintY + L.hintH + 10
+        modeChips.frame = NSRect(x: pad, y: chipsY, width: innerW, height: L.chipsH)
+        modeChips.onChange = { [weak self] i in
+            self?.showingActivity = i == 1
+            self?.refreshLogView()
+        }
+
+        // Header at top
+        let headerY = L.H - pad - L.headerH
+        titleLabel.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold)
         titleLabel.textColor = VosTheme.ink
         titleLabel.stringValue = "VOS"
-        titleLabel.frame = NSRect(x: 16, y: 258, width: 48, height: 18)
+        titleLabel.isBezeled = false
+        titleLabel.drawsBackground = false
+        titleLabel.isEditable = false
+        titleLabel.sizeToFit()
+        let titleW = max(36, titleLabel.frame.width)
+        titleLabel.frame = NSRect(x: pad, y: headerY + 4, width: titleW, height: 18)
 
         statusDot.wantsLayer = true
-        statusDot.frame = NSRect(x: 62, y: 261, width: 8, height: 8)
+        statusDot.frame = NSRect(x: pad + titleW + 10, y: headerY + 8, width: 8, height: 8)
         statusDot.layer?.cornerRadius = 4
         statusDot.layer?.backgroundColor = Phase.idle.color.cgColor
-        statusDot.layer?.borderWidth = 0.5
-        statusDot.layer?.borderColor = NSColor.white.withAlphaComponent(0.15).cgColor
 
-        statusLabel.font = NSFont.systemFont(ofSize: 11.5, weight: .medium)
+        statusLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
         statusLabel.textColor = VosTheme.ink2
-        statusLabel.frame = NSRect(x: 76, y: 256, width: 250, height: 18)
+        statusLabel.isBezeled = false
+        statusLabel.drawsBackground = false
+        statusLabel.isEditable = false
+        let statusX = pad + titleW + 24
+        statusLabel.frame = NSRect(x: statusX, y: headerY + 3, width: L.W - statusX - pad, height: 20)
 
-        meter.frame = NSRect(x: 16, y: 246, width: 320, height: 5)
+        // Meter under header
+        let meterY = headerY - 4 - L.meterH
+        meter.frame = NSRect(x: pad, y: meterY, width: innerW, height: L.meterH)
         meter.isHidden = true
 
-        // Transcript well
+        // Transcript well fills remaining space
+        let wellTop = meterY - L.gap
+        let wellBottom = chipsY + L.chipsH + L.gap
+        let wellH = max(120, wellTop - wellBottom)
         well.wantsLayer = true
-        well.layer?.cornerRadius = 10
+        well.layer?.cornerRadius = 12
         well.layer?.backgroundColor = VosTheme.well.cgColor
         well.layer?.borderWidth = 1
         well.layer?.borderColor = VosTheme.line.cgColor
-        well.frame = NSRect(x: 12, y: 58, width: 328, height: 178)
+        well.frame = NSRect(x: pad, y: wellBottom, width: innerW, height: wellH)
 
-        scroll.frame = well.bounds.insetBy(dx: 2, dy: 2)
+        scroll.frame = well.bounds.insetBy(dx: 1, dy: 1)
         scroll.autoresizingMask = [.width, .height]
         scroll.hasVerticalScroller = true
         scroll.scrollerStyle = .overlay
         scroll.borderType = .noBorder
         scroll.drawsBackground = false
+        scroll.automaticallyAdjustsContentInsets = false
         logView.isEditable = false
         logView.isRichText = true
         logView.drawsBackground = false
-        logView.textContainerInset = NSSize(width: 10, height: 10)
+        logView.textContainerInset = NSSize(width: 12, height: 12)
         logView.textContainer?.lineFragmentPadding = 0
+        logView.textContainer?.widthTracksTextView = true
         scroll.documentView = logView
         well.addSubview(scroll)
-
-        activityToggle.segmentStyle = .rounded
-        activityToggle.selectedSegment = 0
-        activityToggle.target = self
-        activityToggle.action = #selector(onToggleActivity)
-        activityToggle.frame = NSRect(x: 12, y: 36, width: 148, height: 20)
-        if #available(macOS 11.0, *) {
-            activityToggle.controlSize = .small
-        }
-
-        hintLabel.font = NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
-        hintLabel.textColor = VosTheme.ink3
-        hintLabel.frame = NSRect(x: 168, y: 36, width: 172, height: 18)
-        hintLabel.alignment = .right
-
-        talkButton.filled = true
-        talkButton.frame = NSRect(x: 12, y: 8, width: 100, height: 26)
-        talkButton.target = self
-        talkButton.action = #selector(onTalkToggle)
-
-        recapButton.frame = NSRect(x: 120, y: 8, width: 88, height: 26)
-        recapButton.target = self
-        recapButton.action = #selector(onRecap)
-
-        quitButton.frame = NSRect(x: 264, y: 8, width: 76, height: 26)
-        quitButton.target = self
-        quitButton.action = #selector(onQuit)
 
         content.addSubview(titleLabel)
         content.addSubview(statusDot)
         content.addSubview(statusLabel)
         content.addSubview(meter)
         content.addSubview(well)
-        content.addSubview(activityToggle)
+        content.addSubview(modeChips)
         content.addSubview(hintLabel)
         content.addSubview(talkButton)
         content.addSubview(recapButton)
         content.addSubview(quitButton)
 
         panel.contentView = chrome
+        panel.setContentSize(NSSize(width: L.W, height: L.H))
         setupStatusItem()
         setupKeyMonitor()
+    }
+
+    func refreshLogView() {
+        if showingActivity {
+            logView.textStorage?.setAttributedString(activityStorage)
+        } else {
+            logView.textStorage?.setAttributedString(transcriptStore)
+        }
+        logView.scrollToEndOfDocument(nil)
     }
 
     func seedWelcome() {
@@ -307,7 +416,7 @@ final class HudController: NSObject, AVAudioRecorderDelegate {
             panel.setFrameOrigin(NSPoint(x: x, y: y))
         } else if let screen = NSScreen.main {
             let f = screen.visibleFrame
-            panel.setFrameOrigin(NSPoint(x: f.maxX - 372, y: f.maxY - 330))
+            panel.setFrameOrigin(NSPoint(x: f.maxX - 400, y: f.maxY - 370))
         }
     }
 
@@ -345,10 +454,7 @@ final class HudController: NSObject, AVAudioRecorderDelegate {
             if self.transcriptStore.length > 50000 {
                 self.transcriptStore.deleteCharacters(in: NSRange(location: 0, length: self.transcriptStore.length - 35000))
             }
-            if !self.showingActivity {
-                self.logView.textStorage?.setAttributedString(self.transcriptStore)
-                self.logView.scrollToEndOfDocument(nil)
-            }
+            if !self.showingActivity { self.refreshLogView() }
             self.saveSession(role: role, text: text)
         }
     }
@@ -364,10 +470,7 @@ final class HudController: NSObject, AVAudioRecorderDelegate {
             if self.activityStorage.length > 50000 {
                 self.activityStorage.deleteCharacters(in: NSRange(location: 0, length: self.activityStorage.length - 35000))
             }
-            if self.showingActivity {
-                self.logView.textStorage?.setAttributedString(self.activityStorage)
-                self.logView.scrollToEndOfDocument(nil)
-            }
+            if self.showingActivity { self.refreshLogView() }
         }
     }
 
@@ -406,16 +509,6 @@ final class HudController: NSObject, AVAudioRecorderDelegate {
                 self.meterTimer?.invalidate()
             }
         }
-    }
-
-    @objc func onToggleActivity() {
-        showingActivity = activityToggle.selectedSegment == 1
-        if showingActivity {
-            logView.textStorage?.setAttributedString(activityStorage)
-        } else {
-            logView.textStorage?.setAttributedString(transcriptStore)
-        }
-        logView.scrollToEndOfDocument(nil)
     }
 
     // MARK: recording (VAD)
