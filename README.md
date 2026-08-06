@@ -30,16 +30,30 @@ vos ask "what's on my plate for LURA"
 vos gmail "unread from last 24h"   # if gws is configured
 
 # voice path (local STT + TTS, no SuperWhisper)
-vos listen          # record until Ctrl+C or max seconds, transcribe, run, speak
-vos talk            # multi-turn voice loop until "stop" / "goodbye"
+vos listen            # VAD auto-stop: speak, pause — it knows when you're done
+vos talk              # multi-turn loop: "stop" / "goodbye" ends it
+vos listen 60         # raise the max recording window (default 45s)
+
+# memory & history
+vos remember "the box must stay in SUPABASE mode"   # durable fact → live context
+vos sessions          # recent session log topics
+vos session <id>      # read one session
 ```
 
-Dock app (optional):
+Floating HUD (the fun part — `vos live` or the Dock app):
 
 ```bash
-./scripts/make-app.sh
-# then: open dist/VOS.app  →  keep in Dock
+./scripts/make-app.sh            # build dist/VOS.app once
+open dist/VOS.app                # or: vos live
 ```
+
+The HUD is a native always-on-top voice panel:
+- **Talk** — click once for a conversation loop: it listens, you speak, pause, it answers and listens again until you say *stop* or press `Esc`.
+- **Hold Space / hold Talk** — push-to-talk (records only while held).
+- **Live level meter + VAD** — you always know *when* it's listening (red bars), transcribing (orange), thinking (yellow), speaking (green).
+- **Transcript tab** — clean role-colored readback (`YOU` / `VOS`); **Activity tab** — raw CLI output.
+- **R = recap**, **Esc = cancel**, **⌘C menu item copies the transcript**.
+- Menu-bar dot shows live state; VOS **auto-refreshes the daily briefing** when it boots.
 
 ## SuperWhisper?
 
