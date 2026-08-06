@@ -27,6 +27,7 @@ seed() {
 seed "$VOS_REPO/pack/SOUL.md" "$VOS_HOME/SOUL.md"
 seed "$VOS_REPO/pack/memory/MEMORY.md" "$VOS_HOME/memory/MEMORY.md"
 seed "$VOS_REPO/pack/memory/user_role.md" "$VOS_HOME/memory/user_role.md"
+seed "$VOS_REPO/pack/memory/user_facts.md" "$VOS_HOME/memory/user_facts.md"
 seed "$VOS_REPO/pack/memory/project_lura.md" "$VOS_HOME/memory/project_lura.md"
 seed "$VOS_REPO/pack/memory/project_vos.md" "$VOS_HOME/memory/project_vos.md"
 seed "$VOS_REPO/pack/memory/reference_hosts.md" "$VOS_HOME/memory/reference_hosts.md"
