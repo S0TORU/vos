@@ -30,7 +30,7 @@ PLIST
 # Build floating HUD binary if possible
 HUD="$OUT_DIR/VOSLive"
 if command -v swiftc >/dev/null 2>&1; then
-  swiftc -O -o "$HUD" "$VOS_REPO/macos/VOSLive.swift" -framework Cocoa 2>/dev/null \
+  swiftc -O -o "$HUD" "$VOS_REPO/macos/VOSLive.swift" -framework Cocoa -framework AVFoundation 2>/dev/null \
     && echo "Built HUD: $HUD" || echo "HUD compile skipped/failed"
 fi
 
