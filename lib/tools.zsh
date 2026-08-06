@@ -310,22 +310,28 @@ $user_text
       ;;
   esac
 
-  # Summarize for voice / short readout
+  # Conversational summary ONLY on stdout (what voice will say).
+  # Raw tool dump goes to stderr / activity — never spoken.
   local summary_prompt
-  summary_prompt="Summarize this tool result for the user in 3-8 short spoken-friendly sentences. Tool=$tool. User asked: $user_text
-
-RESULT:
-$result
+  summary_prompt="You are VOS talking out loud to Aanu like a sharp cofounder on a call.
+Reply in 2–5 short spoken sentences. Natural, warm, direct. No markdown. No bullet lists.
+Do NOT say: plan, tool, agent run, JSON, dispatch, user wants, Ready., or file paths unless essential.
+Do NOT narrate that you ran Hermes/Prime/Claude — just give the useful answer.
+User asked: $user_text
+What came back from the background job ($tool):
+$(printf '%s' "$result" | head -c 3500)
 "
   local summary
   summary="$(conductor_run "$summary_prompt" chat || true)"
-  if [[ -n "${summary// }" ]]; then
-    printf '%s\n' "$summary"
-    echo ""
-    echo "--- raw ($tool) ---"
-    printf '%s\n' "$result" | head -c 8000
-    echo
-  else
-    printf '%s\n' "$result"
+  if [[ -z "${summary// }" ]]; then
+    summary="$(python3 "$VOS_REPO/lib/speech_clean.py" --speak "$result" 2>/dev/null || true)"
   fi
+  # stdout = speakable only
+  printf '%s\n' "${summary:-Okay — that finished, but I did not get a clean summary.}"
+  # activity / logs
+  {
+    echo "--- raw ($tool) ---"
+    printf '%s\n' "$result" | head -c 6000
+    echo
+  } >&2
 }

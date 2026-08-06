@@ -108,7 +108,12 @@ vos_meter_bar() {
 # Clean model text for TTS: strip markdown, bullets, links, collapse ws.
 # (python script kept OUTSIDE the function body — zsh mangles \1 backrefs in heredocs)
 vos_speech_text() {
-  python3 "$VOS_REPO/lib/speech_clean.py" "$@"
+  # Conversational TTS cleanup (strips plans, raw tool dumps, markdown)
+  python3 "$VOS_REPO/lib/speech_clean.py" --speak "$@"
+}
+
+vos_speech_brief() {
+  python3 "$VOS_REPO/lib/speech_clean.py" --brief "$@"
 }
 
 # Speak text aloud. Modes:
@@ -190,32 +195,11 @@ vos_remember() {
   printf 'Remembered: %s\n' "$t"
 }
 
-# Short spoken briefing from the last full briefing (sections + first lines).
+# Short *spoken* briefing — casual monologue, not section headers.
 vos_briefing_short() {
   local src="${1:-$VOS_HOME/state/last_briefing.md}"
   [[ -f "$src" ]] || return 0
-  python3 - "$src" <<'PY'
-import re, sys
-lines = [l.rstrip() for l in open(sys.argv[1], errors="replace")]
-sections = ["Who you are", "Environment", "What we've been building", "Current state", "What's next", "Watch items"]
-out = []
-for s in sections:
-    for i, l in enumerate(lines):
-        if l.strip().strip("*").strip() == s:
-            out.append(s + ":")
-            n = 0
-            for l2 in lines[i+1:]:
-                l2 = l2.strip().strip("*").strip()
-                if l2 in sections:
-                    break
-                if l2:
-                    out.append("  " + l2[:200])
-                    n += 1
-                    if n >= 2:
-                        break
-            break
-print("\n".join(out))
-PY
+  vos_speech_brief "$(cat "$src")"
 }
 
 # Handle a raw (possibly voice-lossy) user line as a voice intent.

@@ -723,18 +723,20 @@ final class HudController: NSObject, AVAudioRecorderDelegate {
 
     func speak(_ text: String) {
         setPhase(.speaking)
-        let clean = text
-            .replacingOccurrences(of: "**", with: "")
-            .replacingOccurrences(of: "`", with: "")
-            .replacingOccurrences(of: "#", with: " ")
-            .replacingOccurrences(of: "—", with: " - ")
-        let voice = UserDefaults.standard.string(forKey: "vosvoice") ?? ""
+        // Write full text → speech_clean (conversational) → say (blocks until done)
+        let path = "\(vosHome())/state/hud_to_speak.txt"
+        try? text.write(toFile: path, atomically: true, encoding: .utf8)
+        let p = path.replacingOccurrences(of: "'", with: "'\\''")
+        let cleanPy = "\(home)/vos/lib/speech_clean.py"
         let aiff = "\(vosHome())/state/hud_speech.aiff"
-        let aiffArg = aiff.replacingOccurrences(of: "'", with: "'\\''")
-        let voiceArg = voice.isEmpty ? "" : "-v '\(voice.replacingOccurrences(of: "'", with: "'\\''"))' "
-        // Use heredoc-safe approach via printf
-        let b64 = Data(clean.utf8).base64EncodedString()
-        ttsProcess = runShellRaw("/bin/zsh -lc 'printf %s \(b64) | base64 -d | \(voiceArg)say -r 195 -o \(aiffArg) && /usr/bin/afplay \(aiffArg)'") { [weak self] _, _ in
+        let aiffQ = aiff.replacingOccurrences(of: "'", with: "'\\''")
+        let pyQ = cleanPy.replacingOccurrences(of: "'", with: "'\\''")
+        ttsProcess = runShellRaw(
+            "export PATH=\"$HOME/bin:/opt/homebrew/bin:$PATH\"; " +
+            "TEXT=$(python3 '\(pyQ)' --speak < '\(p)'); " +
+            "[[ -n \"$TEXT\" ]] || TEXT='Okay.'; " +
+            "say -r 195 -o '\(aiffQ)' \"$TEXT\" && /usr/bin/afplay '\(aiffQ)'"
+        ) { [weak self] _, _ in
             self?.doneCycle()
         }
     }

@@ -239,10 +239,11 @@ cmd_recap() {
   local prompt
   prompt="Deliver the boot briefing NOW from LOADED CONTEXT only. Do not call tools. Do not read files.
 
-Prefer LIVE PULSE over static project_lura boilerplate when they disagree (pulse has git branch, TODO Now, Claude memory stars).
-Keep sections short and voice-friendly.
+Prefer LIVE PULSE over static project_lura boilerplate when they disagree.
+Write a SHORT document briefing with sections (for the screen). Also keep each section tight (2–4 bullets max).
 Sections: Who you are; Environment; What we've been building; Current state; What's next; Watch items.
 End with Ready.
+(The spoken version is generated separately — do not write \"user wants\" or internal planner language.)
 
 # SKILL (format only)
 $(cat "$skill")
@@ -350,12 +351,19 @@ cmd_ask() {
   fi
 
   local ctx; ctx="$(load_context_blob)"
-  local prompt="You are VOS, a personal Mac operating agent.
-Follow SOUL and memory. Prefer short voice-friendly answers.
-If the user needs Hermes/Prime/Claude/Gmail, tell them to say the worker name or use vos plan.
-Confirm before send_email, git_push, cloud_spend, destructive actions.
+  local prompt="You are VOS — Aanu's voice cofounder on the Mac.
+Speak like a person on a call: short, natural, direct. 2–6 sentences unless they ask for depth.
+Use SOUL + memory for facts. Never invent LURA science.
 
-# CONTEXT
+VOICE RULES (critical):
+- No markdown, bullets, headers, or code fences.
+- Never say: plan, JSON, tool, agent run, dispatch, user wants, Ready., LOADED CONTEXT.
+- Never narrate internal steps (\"I'll call Prime…\"). Just answer or say what you'll do in plain English (\"I'll kick that to Prime.\").
+- If something needs a heavy worker, one casual sentence — then stop.
+
+Confirm before send email, force-push, or cloud spend.
+
+# CONTEXT (for you only — do not read aloud)
 $ctx
 
 # USER
@@ -375,15 +383,9 @@ $user_text
   local out=""
   out="$(conductor_run "$prompt" chat || true)"
   if [[ -z "${out// }" ]]; then
-    out="(offline) Heard: $user_text
-
-DeepSeek conductor did not respond. Check:
-  vos status
-  FIREWORKS_API_KEY in ~/.grok/.env.fireworks
-  grok -m deepseek-flash -p \"ping\"
-  cat ~/.vos/state/conductor.err
-"
+    out="I couldn't reach the brain just now. Try vos status, or check your Fireworks key."
   fi
+  # Always pass a speak-safe line for voice loops (still print model text)
   printf '%s\n' "$out" | tee -a "$session"
 }
 
