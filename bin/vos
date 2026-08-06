@@ -56,6 +56,8 @@ Workers (direct tools — no config rewrite):
 
 Environment:
   VOS_HOME, VOS_REPO, VOS_MODEL, VOS_CONDUCTOR, VOS_LLM_MODEL
+  VOS_CHAT_MAX_TURNS                     default 4 (ask/recap; was 1 → max turns errors)
+  VOS_TOOLS_MAX_TURNS                    default 8
   VOS_HERMES_MODEL / VOS_HERMES_PROVIDER  optional Hermes overrides
   VOS_PRIME_CWD / VOS_CLAUDE_CWD          default nfnexusgnn
   GROK_FIREWORKS_ENV                     default ~/.grok/.env.fireworks
@@ -86,8 +88,15 @@ resolve_grok() {
 }
 
 # Run a one-shot prompt through the conductor. Prints model text to stdout.
-# Brain = DeepSeek Flash on Fireworks (via Grok Build CLI as the host — model is NOT xAI Grok weights).
-# $2 = mode: "chat" (default, max-turns 1, stable on Fireworks) | "tools" (allow agent tools)
+# Brain = DeepSeek Flash on Fireworks via Grok Build CLI.
+#
+# Env knobs (the "max turns" parameters):
+#   VOS_CHAT_MAX_TURNS   default 4   — ask / recap / spoken rewrite (no tools)
+#   VOS_TOOLS_MAX_TURNS  default 8   — rare tools mode
+#   VOS_LLM_MODEL        default deepseek-flash
+#   VOS_CONDUCTOR        deepseek | offline
+#
+# $2 = mode: chat | tools
 conductor_run() {
   local prompt="$1"
   local mode="${2:-chat}"
@@ -106,25 +115,50 @@ conductor_run() {
   mkdir -p "$VOS_HOME/state"
   local err="$VOS_HOME/state/conductor.err"
   local full
-  full="[HOST] You are VOS (Voice OS). Inference: ${VOS_LLM_MODEL} on Fireworks (DeepSeek). Host CLI is Grok Build — do not claim to be xAI Grok the product. Be concise.
+  full="[HOST] You are VOS (Voice OS). Inference: ${VOS_LLM_MODEL} on Fireworks (DeepSeek). Host CLI is Grok Build — do not claim to be xAI Grok the product. Be concise. Answer in text only — do not call tools.
 [TASK]
 $prompt"
-  # Fireworks + multi-turn tool loops can 400 (model_id field). Default chat = single turn.
+  local chat_turns="${VOS_CHAT_MAX_TURNS:-4}"
+  local tool_turns="${VOS_TOOLS_MAX_TURNS:-8}"
   local -a args
   args=(-m "$VOS_LLM_MODEL" -p "$full")
   if [[ "$mode" == "tools" ]]; then
-    args+=(--always-approve --max-turns 8)
+    # Multi-step agentic (use sparingly; Fireworks can 400 on long tool loops)
+    args+=(--always-approve --max-turns "$tool_turns" --no-plan)
   else
-    args+=(--max-turns 1 --disable-web-search)
+    # Chat: enough turns for a normal reply if the host counts an internal step.
+    # Was hard-coded to 1 → "Max turns reached" whenever Grok Build burned a turn.
+    args+=(
+      --max-turns "$chat_turns"
+      --disable-web-search
+      --no-plan
+      --no-subagents
+    )
   fi
-  if ! "$g" "${args[@]}" 2>"$err"; then
+  local out=""
+  set +e
+  out="$("$g" "${args[@]}" 2>"$err")"
+  local rc=$?
+  set -e
+  # Treat pure max-turns noise as failure even if exit 0
+  if printf '%s' "$out" | grep -qiE 'max turns reached'; then
+    rc=1
+    printf 'max turns (chat_turns=%s). Raise with: export VOS_CHAT_MAX_TURNS=6\n' "$chat_turns" >>"$err"
+  fi
+  if [[ $rc -ne 0 ]]; then
     if [[ -s "$err" ]]; then
       echo "conductor error (see $err)" >&2
-      head -c 400 "$err" >&2 || true
+      head -c 500 "$err" >&2 || true
       echo >&2
+    fi
+    # If we still got useful text before the error, keep it
+    if [[ -n "${out// }" ]] && ! printf '%s' "$out" | grep -qiE '^(max turns reached|error: max turns)'; then
+      printf '%s\n' "$out"
+      return 0
     fi
     return 1
   fi
+  printf '%s\n' "$out"
 }
 
 resolve_whisper_model() {

@@ -26,7 +26,9 @@ DROP_LINE = re.compile(
     r"user wants to|"
     r"LOADED CONTEXT|"
     r"NOTE:|"
-    r"generated:"
+    r"generated:|"
+    r"max turns reached|"
+    r"Error: max turns"
     r")"
 )
 
