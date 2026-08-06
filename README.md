@@ -10,6 +10,14 @@ Mic → local Whisper (free) → conductor (Grok Build / shell tools) → worker
 - **Not** locked to SuperWhisper (optional later)  
 - **Is** a sidecar project: new files + wrappers only  
 
+## Brain (default)
+
+**DeepSeek V4 Flash on Fireworks** via Grok Build (`-m deepseek-flash`).
+
+Uses your existing `~/.grok/.env.fireworks` (`FIREWORKS_API_KEY`) — same stack as `grokds`. No SuperWhisper. No Grok Voice Agent required.
+
+Override: `VOS_LLM_MODEL=deepseek-v4-pro vos ask "..."` or `VOS_CONDUCTOR=offline vos recap`.
+
 ## Quick start
 
 ```bash

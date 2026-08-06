@@ -25,20 +25,56 @@ VOS — Voice Operating System
   vos doctor           Alias for status
 
 Environment:
-  VOS_HOME     default ~/.vos
-  VOS_REPO     default ~/vos
-  VOS_MODEL    whisper ggml path (optional)
-  VOS_CONDUCTOR  grok | offline | offline  (default: auto)
+  VOS_HOME       default ~/.vos
+  VOS_REPO       default ~/vos
+  VOS_MODEL      whisper ggml path (optional)
+  VOS_CONDUCTOR  deepseek | offline  (default: deepseek)
+  VOS_LLM_MODEL  default deepseek-flash (Grok Build model id → Fireworks)
+  GROK_FIREWORKS_ENV  default ~/.grok/.env.fireworks
 EOF
 }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# Default brain: DeepSeek V4 Flash on Fireworks via Grok Build (-m deepseek-flash)
+VOS_CONDUCTOR="${VOS_CONDUCTOR:-deepseek}"
+VOS_LLM_MODEL="${VOS_LLM_MODEL:-deepseek-flash}"
+
+load_fireworks_env() {
+  local env_file="${GROK_FIREWORKS_ENV:-$HOME/.grok/.env.fireworks}"
+  if [[ -f "$env_file" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$env_file"
+    set +a
+  fi
+}
 
 resolve_grok() {
   if have grok; then command -v grok
   elif [[ -x "$HOME/.grok/bin/grok" ]]; then echo "$HOME/.grok/bin/grok"
   else echo ""
   fi
+}
+
+# Run a one-shot prompt through the conductor. Prints model text to stdout.
+conductor_run() {
+  local prompt="$1"
+  if [[ "${VOS_CONDUCTOR}" == "offline" ]]; then
+    return 1
+  fi
+  load_fireworks_env
+  local g; g="$(resolve_grok)"
+  if [[ -z "$g" ]]; then
+    return 1
+  fi
+  if [[ -z "${FIREWORKS_API_KEY:-}" && "$VOS_LLM_MODEL" == deepseek* ]]; then
+    echo "FIREWORKS_API_KEY missing (expected in ~/.grok/.env.fireworks)" >&2
+    return 1
+  fi
+  # -p / prompt one-shot; -m selects Fireworks DeepSeek via ~/.grok/config.toml
+  # --always-approve so tool calls in voice mode aren't stuck on TUI prompts
+  "$g" -m "$VOS_LLM_MODEL" --always-approve -p "$prompt" 2>/dev/null
 }
 
 resolve_whisper_model() {
@@ -76,15 +112,20 @@ cmd_install() {
 }
 
 cmd_status() {
+  load_fireworks_env
   echo "VOS_REPO=$VOS_REPO"
   echo "VOS_HOME=$VOS_HOME"
+  echo "conductor: $VOS_CONDUCTOR"
+  echo "llm model: $VOS_LLM_MODEL  (DeepSeek Flash via Fireworks)"
+  echo -n "FIREWORKS_API_KEY: "
+  if [[ -n "${FIREWORKS_API_KEY:-}" ]]; then echo "set"; else echo "MISSING"; fi
   echo -n "whisper-cli: "; have whisper-cli && whisper-cli --help >/dev/null 2>&1 && echo ok || echo MISSING
   echo -n "ffmpeg: "; have ffmpeg && echo ok || echo MISSING
   echo -n "say: "; have say && echo ok || echo MISSING
   local m; m="$(resolve_whisper_model)"
   echo "whisper model: ${m:-MISSING}"
   local g; g="$(resolve_grok)"
-  echo "grok: ${g:-MISSING (offline recap still works)}"
+  echo "grok cli: ${g:-MISSING}"
   for t in claude codex prime-agent hermes orca gws; do
     if have "$t"; then echo "$t: ok"; else echo "$t: -"; fi
   done
@@ -121,10 +162,7 @@ cmd_recap() {
 
   mkdir -p "$VOS_HOME/state"
   local out=""
-  local g; g="$(resolve_grok)"
-  if [[ -n "$g" && "${VOS_CONDUCTOR:-auto}" != "offline" ]]; then
-    out="$("$g" -p "$prompt" 2>/dev/null || true)"
-  fi
+  out="$(conductor_run "$prompt" || true)"
   if [[ -z "${out// }" ]]; then
     out="$(offline_recap)"
   fi
@@ -139,7 +177,8 @@ Aanuoluwapo Oshakuade — Elyris / LURA founder. VOS is your personal voice OS s
 ## Environment
 - Host: $(hostname -s 2>/dev/null || hostname)
 - VOS_HOME: $VOS_HOME
-- Grok conductor: $(resolve_grok || echo offline)
+- Conductor: $VOS_CONDUCTOR / $VOS_LLM_MODEL
+- Grok CLI: $(resolve_grok || echo offline)
 - Whisper model: $(resolve_whisper_model || echo none)
 
 ## What we've been building
@@ -203,16 +242,16 @@ $user_text
     echo "## assistant"
   } >"$session"
 
-  local g; g="$(resolve_grok)"
   local out=""
-  if [[ -n "$g" && "${VOS_CONDUCTOR:-auto}" != "offline" ]]; then
-    out="$("$g" -p "$prompt" 2>/dev/null || true)"
-  fi
+  out="$(conductor_run "$prompt" || true)"
   if [[ -z "${out// }" ]]; then
     out="(offline) Heard: $user_text
 
-Grok not available. Try: vos recap | vos status
-Or set conductor path. For Gmail: vos gmail <query> if gws is configured."
+DeepSeek conductor did not respond. Check:
+  vos status
+  FIREWORKS_API_KEY in ~/.grok/.env.fireworks
+  grok -m deepseek-flash -p \"ping\"
+"
   fi
   printf '%s\n' "$out" | tee -a "$session"
 }
