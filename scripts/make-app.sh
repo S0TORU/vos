@@ -27,6 +27,13 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+# Build floating HUD binary if possible
+HUD="$OUT_DIR/VOSLive"
+if command -v swiftc >/dev/null 2>&1; then
+  swiftc -O -o "$HUD" "$VOS_REPO/macos/VOSLive.swift" -framework Cocoa 2>/dev/null \
+    && echo "Built HUD: $HUD" || echo "HUD compile skipped/failed"
+fi
+
 cat > "$APP/Contents/MacOS/vos-launch" <<'LAUNCH'
 #!/bin/zsh
 export PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -34,17 +41,24 @@ VOS_BIN="${HOME}/bin/vos"
 if [[ ! -x "$VOS_BIN" ]]; then
   VOS_BIN="${HOME}/vos/bin/vos"
 fi
-# Open a Terminal window with recap then talk loop
-osascript <<APPLESCRIPT
+# Prefer floating HUD; fallback Terminal
+if [[ -x "${HOME}/vos/dist/VOSLive" ]]; then
+  exec "${HOME}/vos/dist/VOSLive"
+elif [[ -x "${HOME}/bin/vos" ]]; then
+  exec "${HOME}/bin/vos" live
+else
+  osascript <<APPLESCRIPT
 tell application "Terminal"
   activate
-  do script "export PATH=\"\$HOME/bin:/opt/homebrew/bin:\$PATH\"; echo 'VOS'; clear; vos recap; echo; echo 'Starting voice loop (Ctrl+C to stop)…'; vos talk 25"
+  do script "export PATH=\"\$HOME/bin:/opt/homebrew/bin:\$PATH\"; vos live || vos talk 25"
 end tell
 APPLESCRIPT
+fi
 LAUNCH
 chmod +x "$APP/Contents/MacOS/vos-launch"
 
 echo "Built: $APP"
 echo "Open once: open \"$APP\""
+echo "Or: vos live"
 echo "Then right-click Dock icon → Options → Keep in Dock"
-echo "First mic use: allow Terminal (or this app) microphone access in System Settings."
+echo "Mic: allow Terminal/VOS microphone access in System Settings if prompted."

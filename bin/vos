@@ -10,27 +10,46 @@ export VOS_REPO VOS_HOME
 PATH="$VOS_REPO/bin:$PATH"
 export PATH
 
+# Tool switchboard (hermes / prime / claude / …)
+if [[ -f "$VOS_REPO/lib/tools.zsh" ]]; then
+  # shellcheck disable=SC1091
+  source "$VOS_REPO/lib/tools.zsh"
+fi
+if [[ -f "$VOS_REPO/lib/live_pulse.zsh" ]]; then
+  # shellcheck disable=SC1091
+  source "$VOS_REPO/lib/live_pulse.zsh"
+fi
+
 usage() {
   cat <<'EOF'
 VOS — Voice Operating System
 
-  vos install          Sync pack → ~/.vos and link ~/bin/vos
-  vos recap            Boot briefing (memory + Ready)
-  vos ask <text| ->    Ask conductor (text). "-" reads stdin
-  vos listen [secs]    Record mic → Whisper → ask → speak answer
-  vos talk [secs]      Multi-turn voice loop (stop / goodbye to exit)
-  vos speak <text>     TTS only (macOS say)
-  vos gmail <query>    Gmail triage via gws if available
-  vos status           Tools + paths health check
-  vos doctor           Alias for status
+  vos install              Sync pack → ~/.vos and link ~/bin/vos
+  vos recap                Boot briefing (memory + Ready)
+  vos ask <text|->         Chat with DeepSeek Flash (Fireworks)
+  vos plan <text>          Route: plan JSON → tool → summary (switchboard)
+  vos listen [secs]        Mic → Whisper → smart route → speak
+  vos talk [secs]          Multi-turn voice loop
+  vos speak <text>         TTS only (read text aloud — not the live HUD)
+  vos live                 Floating on-screen voice HUD (SuperWhisper-style)
+
+Workers (direct tools — no config rewrite):
+  vos tools                List allowlisted tools
+  vos hermes <prompt>      Hermes agent one-shot
+  vos prime <prompt>       Prime Agent harness one-shot
+  vos claude <prompt>      Claude Code -p
+  vos codex <prompt>       Codex one-shot (best-effort)
+  vos gmail <query>        Gmail read-only via gws
+  vos shell <cmd>          Restricted shell allowlist
+  vos run <tool> [args]    Generic tool runner
+
+  vos status | doctor      Health check
 
 Environment:
-  VOS_HOME       default ~/.vos
-  VOS_REPO       default ~/vos
-  VOS_MODEL      whisper ggml path (optional)
-  VOS_CONDUCTOR  deepseek | offline  (default: deepseek)
-  VOS_LLM_MODEL  default deepseek-flash (Grok Build model id → Fireworks)
-  GROK_FIREWORKS_ENV  default ~/.grok/.env.fireworks
+  VOS_HOME, VOS_REPO, VOS_MODEL, VOS_CONDUCTOR, VOS_LLM_MODEL
+  VOS_HERMES_MODEL / VOS_HERMES_PROVIDER  optional Hermes overrides
+  VOS_PRIME_CWD / VOS_CLAUDE_CWD          default nfnexusgnn
+  GROK_FIREWORKS_ENV                     default ~/.grok/.env.fireworks
 EOF
 }
 
@@ -168,7 +187,10 @@ load_context_blob() {
       blob+=$'\n--- '"$(basename "$f")"$' ---\n'"$(cat "$f")"
     done
   fi
-  # Skip last_briefing in context — can bloat tokens and confuse boot
+  # Distilled live signals (TODO, git, Claude MEMORY index stars) — not full jsonl
+  if typeset -f vos_build_live_pulse >/dev/null 2>&1; then
+    blob+=$'\n\n'"$(vos_build_live_pulse)"
+  fi
   printf '%s' "$blob"
 }
 
@@ -178,7 +200,12 @@ cmd_recap() {
   [[ -f "$skill" ]] || skill="$VOS_REPO/pack/skills/recap/SKILL.md"
   local ctx; ctx="$(load_context_blob)"
   local prompt
-  prompt="Deliver the boot briefing NOW from LOADED CONTEXT only. Do not call tools. Do not read files. Write the sections: Who you are; Environment; What we've been building; Current state; What's next; Watch items. End with Ready.
+  prompt="Deliver the boot briefing NOW from LOADED CONTEXT only. Do not call tools. Do not read files.
+
+Prefer LIVE PULSE over static project_lura boilerplate when they disagree (pulse has git branch, TODO Now, Claude memory stars).
+Keep sections short and voice-friendly.
+Sections: Who you are; Environment; What we've been building; Current state; What's next; Watch items.
+End with Ready.
 
 # SKILL (format only)
 $(cat "$skill")
@@ -225,6 +252,35 @@ Ready.
 EOF
 }
 
+# True if text should use the plan→tool switchboard
+vos_wants_router() {
+  local lower="${1:l}"
+  [[ "$lower" == *hermes* \
+    || "$lower" == *prime* \
+    || "$lower" == *claude* \
+    || "$lower" == *codex* \
+    || "$lower" == *gmail* \
+    || "$lower" == *inbox* \
+    || "$lower" == *email* \
+    || "$lower" == *"dispatch"* \
+    || "$lower" == *"run "* \
+    || "$lower" == *"execute"* \
+    || "$lower" == *"hand off"* \
+    || "$lower" == *"handoff"* \
+    || "$lower" == *"use hermes"* \
+    || "$lower" == *"use prime"* \
+    || "$lower" == *"spin up"* ]]
+}
+
+cmd_plan() {
+  ensure_home
+  if ! typeset -f vos_plan_and_run >/dev/null 2>&1; then
+    echo "tools.zsh not loaded (missing $VOS_REPO/lib/tools.zsh)" >&2
+    exit 1
+  fi
+  vos_plan_and_run "$@"
+}
+
 cmd_ask() {
   ensure_home
   local user_text=""
@@ -238,24 +294,23 @@ cmd_ask() {
     exit 1
   fi
 
-  # Fast paths without LLM
   local lower="${user_text:l}"
   if [[ "$lower" == *"recap"* && ${#user_text} -lt 40 ]]; then
     cmd_recap
     return
   fi
 
-  local ctx; ctx="$(load_context_blob)"
-  # "run" / "execute" / "shell" → tools mode; else stable single-turn chat
-  local mode=chat
-  if [[ "$lower" == *run\ * || "$lower" == *execute* || "$lower" == *shell* || "$lower" == *dispatch* || "$lower" == *"open terminal"* ]]; then
-    mode=tools
+  # Auto-route when user names a worker or dispatch intent
+  if vos_wants_router "$user_text" && typeset -f vos_plan_and_run >/dev/null 2>&1; then
+    vos_plan_and_run "$user_text"
+    return
   fi
 
+  local ctx; ctx="$(load_context_blob)"
   local prompt="You are VOS, a personal Mac operating agent.
 Follow SOUL and memory. Prefer short voice-friendly answers.
+If the user needs Hermes/Prime/Claude/Gmail, tell them to say the worker name or use vos plan.
 Confirm before send_email, git_push, cloud_spend, destructive actions.
-You may describe shell commands; prefer tools already installed.
 
 # CONTEXT
 $ctx
@@ -275,7 +330,7 @@ $user_text
   } >"$session"
 
   local out=""
-  out="$(conductor_run "$prompt" "$mode" || true)"
+  out="$(conductor_run "$prompt" chat || true)"
   if [[ -z "${out// }" ]]; then
     out="(offline) Heard: $user_text
 
@@ -290,16 +345,42 @@ DeepSeek conductor did not respond. Check:
 }
 
 cmd_speak() {
+  # TTS only — for floating live agent use: vos live
+  if [[ -z "${1:-}" ]]; then
+    echo "vos speak = text-to-speech only." >&2
+    echo "For floating on-screen voice agent:  vos live" >&2
+    exit 1
+  fi
   local text="$*"
-  [[ -n "$text" ]] || { echo "usage: vos speak <text>" >&2; exit 1; }
   if have say; then
-    # strip markdown-ish noise for ears
     local clean
     clean="$(printf '%s' "$text" | sed -E 's/`//g; s/\*\*//g; s/^#+ //g' | head -c 4000)"
     say "$clean"
   else
     echo "$text"
   fi
+}
+
+cmd_live() {
+  ensure_home
+  local bin="$VOS_REPO/dist/VOSLive"
+  if [[ ! -x "$bin" ]]; then
+    echo "Building floating HUD…" >&2
+    mkdir -p "$VOS_REPO/dist"
+    if ! have swiftc; then
+      echo "swiftc missing — falling back to Terminal talk loop" >&2
+      exec "$VOS_REPO/bin/vos" talk "${1:-25}"
+    fi
+    swiftc -O -o "$bin" "$VOS_REPO/macos/VOSLive.swift" -framework Cocoa 2>"$VOS_HOME/state/build-hud.err" || {
+      echo "HUD build failed (see ~/.vos/state/build-hud.err). Fallback: vos talk" >&2
+      exec "$VOS_REPO/bin/vos" talk "${1:-25}"
+    }
+  fi
+  echo "Opening floating VOS HUD…" >&2
+  # Run as accessory app (stays floating)
+  nohup "$bin" >/tmp/vos-live.log 2>&1 &
+  disown 2>/dev/null || true
+  echo "HUD pid $!  — click Talk on the floating panel. Log: /tmp/vos-live.log"
 }
 
 cmd_listen() {
@@ -366,23 +447,6 @@ cmd_talk() {
   done
 }
 
-cmd_gmail() {
-  local q="$*"
-  if ! have gws; then
-    echo "gws not installed. Install Google Workspace CLI or skip." >&2
-    exit 1
-  fi
-  # Read-only triage by default — never send from this path
-  echo "Gmail query (read-only intent): $q"
-  # Best-effort; exact subcommands vary by gws version
-  if gws gmail users messages list --params '{"userId":"me","q":"'"$q"'","maxResults":10}' 2>/dev/null; then
-    :
-  else
-    echo "gws list failed — use your elyris-gmail skill from Grok or: gws gmail --help" >&2
-    exit 1
-  fi
-}
-
 main() {
   local cmd="${1:-}"
   [[ -n "$cmd" ]] || { usage; exit 0; }
@@ -391,14 +455,23 @@ main() {
     install) cmd_install "$@" ;;
     recap) cmd_recap "$@" ;;
     ask) cmd_ask "$@" ;;
+    plan|route) cmd_plan "$@" ;;
     listen) cmd_listen "$@" ;;
     talk) cmd_talk "$@" ;;
     speak) cmd_speak "$@" ;;
-    gmail) cmd_gmail "$@" ;;
+    live|hud|float) cmd_live "$@" ;;
+    tools) vos_tools_list ;;
+    hermes) vos_tool_hermes "$@" ;;
+    prime|prime-agent) vos_tool_prime "$@" ;;
+    claude) vos_tool_claude "$@" ;;
+    codex) vos_tool_codex "$@" ;;
+    gmail) vos_tool_gmail "$@" ;;
+    shell) vos_tool_shell "$@" ;;
+    run) vos_tool_run "$@" ;;
     status|doctor) cmd_status "$@" ;;
     -h|--help|help) usage ;;
     *)
-      # Bare text: treat as ask
+      # Bare text: treat as ask (may auto-route if worker named)
       cmd_ask "$cmd" "$@"
       ;;
   esac
